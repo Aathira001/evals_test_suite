@@ -1,0 +1,5 @@
+input,target
+"I am having trouble installing futureverse, I have included my .toml and error message for reference. Is there something I need to add to the repositories for this package?",<p>this is an answer that addresses this question</p>
+rewriting this question,<p>this is an answer to the question</p>
+"rv sync is taking too long, what do I do?",<p>this is the answer to the rv sync question - version 1 </p>
+@Matt Smith - I pulled down a repo and it is still using renv but when I run renv::restore() I get,<p>make sure you run rv sync first! we now use rv</p>

@@ -1,0 +1,10 @@
+system: "../prompts/rv_v0110_20251218.md"
+grader: "../prompts/scorer_rv_v0110_20251218.md"
+log-dir: "../logs"
+data_path: "../data/rv.csv"
+model: "anthropic/bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0"
+grader_model: "anthropic/bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0"
+task_name: "rv_persona_eval_sonnet_4_5"
+tool_calling: False
+message_limit: 10
+temperature: 0.0

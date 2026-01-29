@@ -1,0 +1,15 @@
+[project]
+name = "llm-personas"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "anthropic>=0.61.0",
+    "boto3>=1.39.8",
+    "dspy-ai>=3.0.3",
+    "inspect-ai>=0.3.120",
+    "pandas>=2.3.1",
+    "pyarrow>=21.0.0",
+    "rich>=13.9.4",
+]
