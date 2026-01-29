@@ -1,0 +1,222 @@
+name: SageLab PR Pipeline
+run-name: 🧪 SageLab Eval - ${{ github.event.client_payload.category }} / ${{ github.event.client_payload.dataset_name }}
+
+on:
+  repository_dispatch:
+    types: [sagelab-eval]
+
+env:
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  AWS_REGION: us-east-2
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+  checks: write
+
+jobs:
+  run-eval-pipeline:
+    runs-on: ubuntu-latest
+    if: github.event.client_payload.run_eval == true
+    outputs:
+      accuracy: ${{ steps.eval.outputs.accuracy }}
+      passed: ${{ steps.eval.outputs.passed }}
+    steps:
+      - name: Debug payload
+        run: |
+          echo "📋 Received SageLab dispatch:"
+          echo "  - PR Number: ${{ github.event.client_payload.pr_number }}"
+          echo "  - PR Title: ${{ github.event.client_payload.pr_title }}"
+          echo "  - Category: ${{ github.event.client_payload.category }}"
+          echo "  - Dataset: ${{ github.event.client_payload.dataset_name }}"
+          echo "  - Run Eval: ${{ github.event.client_payload.run_eval }}"
+          echo "  - Auto Merge: ${{ github.event.client_payload.auto_merge }}"
+
+      - name: Get PR head SHA
+        id: pr
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: ${{ github.event.client_payload.pr_number }}
+            });
+            core.setOutput('head_sha', pr.head.sha);
+            console.log(`PR head SHA: ${pr.head.sha}`);
+
+      - name: Create check run (in progress)
+        id: check
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data: check } = await github.rest.checks.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              name: 'SageLab Eval Pipeline',
+              head_sha: '${{ steps.pr.outputs.head_sha }}',
+              status: 'in_progress',
+              started_at: new Date().toISOString(),
+              output: {
+                title: 'Running evaluation...',
+                summary: 'Evaluating ${{ github.event.client_payload.category }} / ${{ github.event.client_payload.dataset_name }}'
+              }
+            });
+            core.setOutput('check_run_id', check.id);
+            console.log(`Created check run: ${check.id}`);
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Cache uv binary
+        uses: actions/cache@v4
+        id: cache-uv
+        with:
+          path: ~/.local/bin/uv
+          key: ${{ runner.os }}-uv-binary
+
+      - name: Install uv
+        if: steps.cache-uv.outputs.cache-hit != 'true'
+        run: curl -LsSf https://astral.sh/uv/install.sh | sh
+
+      - name: Add uv to PATH
+        run: echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Setup environment
+        working-directory: tests
+        run: |
+          uv venv .venv
+          source .venv/bin/activate
+          uv sync --active
+
+      - name: Run evaluation for category
+        id: eval
+        working-directory: tests
+        run: |
+          CATEGORY="${{ github.event.client_payload.category }}"
+          DATASET_NAME="${{ github.event.client_payload.dataset_name }}"
+          echo "🧪 Running eval for category: $CATEGORY"
+
+          source .venv/bin/activate
+          source scripts/process_prompts.sh
+
+          # Set RUN_TIMESTAMP for the script (used in process_prompts.sh)
+          export RUN_TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+
+          # Create logs directory at repo root
+          # Path is relative to repo root (script will convert to absolute)
+          mkdir -p ../logs
+          ALL_EVAL_LOG="logs/${RUN_TIMESTAMP}.log"
+          echo "📝 Log file: $ALL_EVAL_LOG"
+
+          # Capture stdout to extract accuracy
+          EVAL_OUTPUT=$(process_prompts "$CATEGORY" "${CATEGORY}_*.yaml" "$CATEGORY" "" "$ALL_EVAL_LOG" "$DATASET_NAME" 2>&1 | tee /dev/stderr)
+
+          # Extract accuracy from the captured output (format: "accuracy         0.500")
+          ACCURACY=$(echo "$EVAL_OUTPUT" | grep -E '^accuracy\s+' | awk '{print $2}' | tail -1 || true)
+
+          if [ -z "$ACCURACY" ]; then
+            # Fallback: try the log file
+            LOG_FILE_PATH="../logs/${RUN_TIMESTAMP}.log"
+            if [ -f "$LOG_FILE_PATH" ]; then
+              ACCURACY=$(grep -E '^accuracy\s+' "$LOG_FILE_PATH" | awk '{print $2}' | tail -1 || true)
+            fi
+          fi
+
+          if [ -z "$ACCURACY" ]; then
+            echo "⚠️ Could not extract accuracy, defaulting to 0"
+            ACCURACY="0"
+          fi
+
+          echo "📊 Extracted accuracy: $ACCURACY"
+          echo "accuracy=$ACCURACY" >> $GITHUB_OUTPUT
+
+          if (( $(echo "$ACCURACY >= 0.75" | bc -l) )); then
+            echo "passed=true" >> $GITHUB_OUTPUT
+            echo "✅ Eval passed with accuracy: $ACCURACY"
+          else
+            echo "passed=false" >> $GITHUB_OUTPUT
+            echo "❌ Eval failed with accuracy: $ACCURACY (threshold: 0.75)"
+          fi
+
+      - name: Update check run (completed)
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const passed = '${{ steps.eval.outputs.passed }}' === 'true';
+            const accuracy = '${{ steps.eval.outputs.accuracy }}' || 'N/A';
+            const conclusion = passed ? 'success' : 'failure';
+
+            await github.rest.checks.update({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              check_run_id: ${{ steps.check.outputs.check_run_id }},
+              status: 'completed',
+              conclusion: conclusion,
+              completed_at: new Date().toISOString(),
+              output: {
+                title: passed ? '✅ Eval Passed' : '❌ Eval Failed',
+                summary: `**Accuracy:** ${accuracy}\n**Threshold:** 0.75\n**Result:** ${passed ? 'PASSED' : 'FAILED'}`,
+                text: `Category: ${{ github.event.client_payload.category }}\nDataset: ${{ github.event.client_payload.dataset_name }}`
+              }
+            });
+            console.log(`Updated check run with conclusion: ${conclusion}`);
+
+      - name: Post eval results comment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prNumber = ${{ github.event.client_payload.pr_number }};
+            const accuracy = '${{ steps.eval.outputs.accuracy }}';
+            const passed = '${{ steps.eval.outputs.passed }}' === 'true';
+            const emoji = passed ? '✅' : '❌';
+            const status = passed ? 'PASSED' : 'FAILED';
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              body: `## ${emoji} Eval Results: ${status}\n\n| Metric | Value |\n|--------|-------|\n| **Accuracy** | ${accuracy} |\n| **Threshold** | 0.75 |\n| **Status** | ${status} |\n\n${passed ? '🤖 Auto-merge will proceed.' : '⚠️ Manual review required.'}`
+            });
+
+      - name: Add eval result label
+        if: steps.eval.outputs.passed == 'false'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prNumber = ${{ github.event.client_payload.pr_number }};
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              labels: ['sagelab:eval-failed']
+            });
+
+      - name: Fail check if eval failed
+        if: steps.eval.outputs.passed == 'false'
+        run: |
+          echo "❌ Evaluation failed - check status will be marked as failed"
+          exit 1
+
+  enable-auto-merge:
+    needs: [run-eval-pipeline]
+    if: |
+      always() &&
+      github.event.client_payload.auto_merge == true &&
+      (needs.run-eval-pipeline.result == 'skipped' || needs.run-eval-pipeline.outputs.passed == 'true')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Enable auto-merge
+        run: gh pr merge ${{ github.event.client_payload.pr_number }} --auto --merge
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
