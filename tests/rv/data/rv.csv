@@ -3,3 +3,4 @@ input,target
 rewriting this question,<p>this is an answer to the question</p>
 "rv sync is taking too long, what do I do?",<p>this is the answer to the rv sync question - version 1 </p>
 @Matt Smith - I pulled down a repo and it is still using renv but when I run renv::restore() I get,<p>make sure you run rv sync first! we now use rv</p>
+I am trying to add a package with `rv add` but am getting the error: ``` Failed to load package database: Failed to download file from <https://prism.dev.a2-ai.cloud/rpkgs/stratus/2025-07-13/src/contrib/PACKAGES> Reason: HTTP error code: 404``` I am getting the same error when I run `rv sync` . Any idea on how to resolve this?,<p>sdfsfsdf</p>
